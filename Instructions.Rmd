@@ -1,0 +1,330 @@
+---
+title: "Instructions for the analysis around the effect of pork barrel of Polish 2020 elections"
+output: html_notebook
+---
+#Data cleaning
+
+First, we will be looking at loading the data sets and cleaning them.
+
+In the first part of the analysis, we will import 
+ a) the population data,
+ b) Rodzina 500+ benefit data,
+ c) Election data from 2015 and 2020, second round
+ d) shapefile (.shp) of the communes in Poland
+ 
+ 
+All the data comes from the governmental websites. all the zip data has been moved to the data_raw folder, and unzipped into data_unzipped.
+
+First, we load our commune shapefile and simplify it, for quicker processing.
+
+
+```{r}
+library(here)
+library(sf)
+library(janitor)
+library(readxl)
+library(plyr)
+library(tmap)
+library(tidyverse)
+library(dplyr)
+```
+
+```{r}
+communes <- st_read(here::here("data", "data_unzipped", "Gminy","Gminy.shp"))
+
+communes_simple <- st_simplify(communes)
+communes_simple$JPT_KOD_JE <- as.character(communes_simple$JPT_KOD_JE)
+communes_simple$kod_teryt <- str_sub(communes_simple$JPT_KOD_JE,
+                                 1,
+                                 str_length(communes_simple$JPT_KOD_JE)-1)
+```
+
+Next, we import the population data - remove  unneeded columns and fix incorrect ID codes of commutes. 7 digit Codes are wrongly assigned to Lututow, Piatek, Czerwinsk nad Wisla and Klimotow.
+
+```{r}
+population <- read.csv(here::here("data","data_unzipped", "LUDN_2137_CREL_20210123152322.csv"),
+                       sep = ";",
+                       encoding = 'UTF-8')
+
+population[c("Jednostka.miary","Atrybut","Rok","X","Plec")]<- NULL
+
+population$Kod <- as.character(population$Kod)
+
+working_age_groups <- c("15-19","20-24","25-29","30-34", "35-39", "40-44","45-49","50-54")
+
+population_cleaned <- population %>%
+                        clean_names() %>%
+                        filter(wiek %in% working_age_groups)%>%
+                        group_by(kod) %>%
+                        dplyr::summarise(workingpopulation = sum(as.numeric(wartosc)))
+
+
+population_cleaned$kod[population_cleaned$kod == '1018042'] <- '1018043'
+population_cleaned$kod[population_cleaned$kod == '1004062'] <- '1004063'
+population_cleaned$kod[population_cleaned$kod == '1420042'] <- '1420043'
+population_cleaned$kod[population_cleaned$kod == '2609032'] <- '2609033'
+
+population_cleaned$kod <- ifelse(str_length(population_cleaned$kod)==6,
+                                             paste("0",population_cleaned$kod, sep = ""),
+                                         population_cleaned$kod)
+```
+
+Then, we move onto Rodzina 500+ data. We run into similar issues we did with population data.
+
+```{r}
+
+rodzina_500 <- read.csv(here::here("data","data_unzipped","OCHR_3803_CREL_20210124132209.csv"),
+                         sep = ";",
+                         encoding = 'UTF-8')
+
+rodzina_500[c("Jednostka.miary","Atrybut","X","nazwa")]<- NULL
+
+rodzina_500_cleaned <- rodzina_500 %>%
+                          clean_names()%>%
+                          pivot_wider(names_from = swiadczenie_wychowawcze, values_from = wartosc)%>%
+                          clean_names()
+
+rodzina_500_cleaned$kod <- as.character(rodzina_500_cleaned$kod)
+rodzina_500_cleaned$kod <- ifelse(str_length(rodzina_500_cleaned$kod)==6,
+                                      paste("0",rodzina_500_cleaned$kod, sep = ""),
+                                      rodzina_500_cleaned$kod)
+
+#7 digit Codes are wrongly assigned to Lututow, Piatek, Czerwinsk nad Wisla and Klimotow
+rodzina_500_cleaned$kod[rodzina_500_cleaned$kod == '1018042'] = '1018043'
+rodzina_500_cleaned$kod[rodzina_500_cleaned$kod == '1004062'] = '1004063'
+rodzina_500_cleaned$kod[rodzina_500_cleaned$kod == '1420042'] = '1420043'
+rodzina_500_cleaned$kod[rodzina_500_cleaned$kod == '2609032'] = '2609033'
+```
+
+Finally, we clean elections data
+```{r}
+elections_2020 <-  read.csv(here::here("data","data_unzipped","wyniki_gl_na_kand_po_obwodach_utf8.csv"),
+                            sep = ";",
+                            encoding = 'UTF-8'
+)
+
+elections_2020_cleaned <- elections_2020 %>%
+                                  clean_names() %>%
+                                  group_by(kod_teryt) %>%
+                                  dplyr::summarise(Dudavotes2020 = sum(as.numeric(andrzej_sebastian_duda)), 
+                                            Trzaskowskivotes2020 = sum(as.numeric(rafal_kazimierz_trzaskowski)),
+                                            totalvotes2020 = sum(as.numeric(liczba_glosow_waznych_oddanych_lacznie_na_wszystkich_kandydatow)))
+
+
+elections_2020_cleaned$Duda_percent_2020 = elections_2020_cleaned$Dudavotes2020/elections_2020_cleaned$totalvotes2020
+
+elections_2020_cleaned$kod_teryt <- as.character(elections_2020_cleaned$kod_teryt)
+elections_2020_cleaned$kod_teryt <- ifelse(str_length(elections_2020_cleaned$kod_teryt)==5,
+                                         paste("0",elections_2020_cleaned$kod_teryt, sep = ""),
+                                         elections_2020_cleaned$kod_teryt
+)
+
+elections_2020_cleaned$kod_teryt[elections_2020_cleaned$kod_teryt=='146502'] <- '146501' #(changing Warsaw's code since it was wrong')
+
+elections_2015 <- read_excel(here::here("data","data_unzipped","wyniki_tura2.xls"))
+
+elections_2015_cleaned <- elections_2015 %>%
+                                  clean_names()%>%
+                                  group_by(teryt_gminy) %>%
+                                  dplyr::summarise(Dudavotes2015 = sum(as.numeric(andrzej_sebastian_duda)), 
+                                            Komorowskivotes2015 = sum(as.numeric(bronislaw_maria_komorowski)),
+                                            Totalvotes2015 = sum(as.numeric(andrzej_sebastian_duda)+as.numeric(bronislaw_maria_komorowski))
+                                  )
+
+
+elections_2015_cleaned$teryt_gminy <- as.character(elections_2015_cleaned$teryt_gminy)
+elections_2015_cleaned$teryt_gminy <- ifelse(str_length(elections_2015_cleaned$teryt_gminy)==5,
+                                         paste("0",elections_2015_cleaned$teryt_gminy, sep = ""),
+                                         elections_2015_cleaned$teryt_gminy
+)
+elections_2015_cleaned$teryt_gminy[elections_2015_cleaned$teryt_gminy=='146502'] <- '146501'
+
+
+elections_2015_cleaned$Duda_percent_2015 = elections_2015_cleaned$Dudavotes2015/elections_2015_cleaned$Totalvotes2015
+
+```
+
+#Data merge
+
+Now we're merging the population data, election data, Rodzina 500+ and the shapefile.
+Terytorial code is contained to 7 digits - the 7th digit can be either a 1 (for an urban commune),
+2 (for a rural commune) or 3 (an urban-rural commune). For communes containing mixed areas
+(urban, rural and urban-rural), 0 number is used with cummulative results. Hence, even though
+we're joining strings of different lenghts, the data is essentially whole and correct.
+
+```{r}
+#Now we're merging the population data, election data, Rodzina 500+ and the shapefile.
+#Terytorial code is contained to 7 digits - the 7th digit can be either a 1 (for an urban commune),
+#2 (for a rural commune) or 3 (an urban-rural commune). For communes containing mixed areas
+#(urban, rural and urban-rural), 0 number is used with cummulative results. Hence, even though
+#we're joining strings of different lenghts, the data is essentially wholely correct.
+
+join <- left_join(communes_simple,
+                  elections_2020_cleaned,
+                  by = c("kod_teryt"="kod_teryt")) %>%
+        left_join(.,
+                  elections_2015_cleaned,
+                  by = c("kod_teryt"="teryt_gminy")) %>%
+        left_join(.,
+                  population_cleaned,
+                  by = c("JPT_KOD_JE"="kod")) %>%
+        left_join(.,
+                  rodzina_500_cleaned,
+                  by = c("JPT_KOD_JE"="kod"))
+
+```
+
+#Computation
+
+In this part we will create a couple of new metrics explained further in the paper.
+
+We first obtain 1. Resources spent per working citizen
+
+
+
+```{r}
+library(tidyverse)
+
+join$difference2020vs2015 <- (join$Duda_percent_2020-join$Duda_percent_2015)/join$Duda_percent_2015
+
+join$Rn <- join$wydatki_na_swiadczenia_wychowawcze/join$workingpopulation
+
+model1 <- join %>%
+  lm(difference2020vs2015 ~
+       Rn,
+     data=.)
+summary(model1)
+
+```
+Then we move onto obtaining 2. Average family size receiving 500+ benefit in the area
+
+```{r}
+join$FSc <- join$przecietna_miesieczna_liczba_dzieci_na_ktore_rodziny_otrzymuja_swiadczenie_wychowawcze_w_okresie_od_1_stycznia_2019_do_30_czerwca_2019/
+            join$przecietna_miesieczna_liczba_rodzin_otrzymujacych_swiadczenie_wychowawcze_w_okresie_od_1_stycznia_2019_do_30_czerwca_2019
+
+model2 <- join %>%
+  lm(difference2020vs2015 ~
+       FSc,
+     data=.)
+summary(model2)
+```
+Then we moved onto obtaining 3. Number of families taking the 500+ benefit in the area
+
+```{r}
+join$Fn <- join$przecietna_miesieczna_liczba_rodzin_otrzymujacych_swiadczenie_wychowawcze_w_okresie_od_1_stycznia_2019_do_30_czerwca_2019/
+           join$workingpopulation
+
+model3 <- join %>%
+  lm(difference2020vs2015 ~
+       Fn,
+     data=.)
+summary(model3)
+```
+
+
+And lastly, in this case we can build a pultiple regression model based on the three variables
+
+```{r}
+model4 <- join %>%
+  lm(difference2020vs2015 ~
+       FSc+
+       Rn+
+       Fn,
+     data=.)
+summary(model4)
+        
+```
+
+#Visualisations 
+
+Those can be produced using plyr and tmap.
+
+```{r}
+library(plyr)
+library(tmap)
+
+join <- join %>% 
+  mutate(perc=difference2020vs2015*100)
+
+join$winner <- ifelse(join$Duda_percent_2020>0.5,"Duda","Trzaskowski")
+
+tmap_mode("plot")
+tm_shape(join, name = "JPT_NAZWA_") + 
+              tm_polygons(col = "perc",
+                          id = "JPT_NAZWA_",
+                          title = "Difference (%) in votes for Duda - 2015 vs 2020",
+                          title.size = 25,
+                          breaks = c(-50,-5,5,50,100,200),
+                          palette = "RdYlGn",
+                          legend.hist = TRUE,
+                          border.alpha = 0.5)+
+              tm_layout(legend.hist.width = 10,
+                        legend.outside = TRUE,
+                        legend.outside.position = "left")
+```
+                        
+  
+```{r}                        
+  tm_shape(join, name = "JPT_NAZWA_") + 
+    tm_polygons(col = "FSc",
+                id = "JPT_NAZWA_",
+                title = "Average family size receiving 500+",
+                palette = "RdYlGn",
+                legend.hist = TRUE,
+                border.alpha = 0.5)+
+    tm_layout(title.size = 20,
+              legend.hist.width = 10,
+              legend.outside = TRUE,
+              legend.outside.position = "left")
+
+```
+
+```{r}
+  
+  tm_shape(join, name = "JPT_NAZWA_") + 
+    tm_polygons(col = "Rn",
+                id = "JPT_NAZWA_",
+                title = "Resources per working age citizen, 01/19-06/19",
+                breaks = c(0,250,500,750,1000,1500,2000,10000),
+                palette = "RdYlGn",
+                legend.hist = TRUE,
+                border.alpha = 0.5)+
+    tm_layout(title.size = 20,
+              legend.hist.width = 10,
+              legend.outside = TRUE,
+              legend.outside.position = "left")
+```
+
+```{r}  
+  tm_shape(join, name = "JPT_NAZWA_") + 
+    tm_polygons(col = "Fn",
+                id = "JPT_NAZWA_",
+                title = "Average number of families receiving 500+, 01/19-06/19",
+                title.size = 25,
+                #breaks = c(-50,-5,5,50,100,200),
+                palette = "RdYlGn",
+                legend.hist = TRUE,
+                border.alpha = 0.5)+
+    tm_layout(legend.hist.width = 10,
+              legend.outside = TRUE,
+              legend.outside.position = "left")
+
+
+```
+As well as the histogram of family size for Duda voters and Trzaskowski voters
+
+
+```{r}
+means <- ddply(join, "winner", summarise, grp.mean=mean(FSc))
+
+ggplot(join, aes(x=FSc, fill=winner, color=winner))+
+                         geom_histogram(alpha=0.2, position="identity", bins = 50)+
+                         geom_vline(data=means, aes(xintercept=grp.mean, color=winner), linetype="dashed", size = 1.5)+
+                         labs(title="Electorial winner in the commune, 2020",
+                               x="Average no. of children per family receiving 500+, 1/19-6/19",
+                               y="Commute count")+
+                         theme(plot.title = element_text(hjust=0.5))+
+                        scale_color_brewer(palette="Dark2")+
+                        scale_fill_brewer(palette="Dark2")
+```
+
